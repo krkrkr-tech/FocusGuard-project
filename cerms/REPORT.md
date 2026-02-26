@@ -2,8 +2,7 @@
 ## Phase 2: Institutional Information System Report
 
 **Domain:** Urban Infrastructure — Emergency Response  
-**City:** Astana, Kazakhstan  
-**Date:** February 2026
+
 
 ---
 
