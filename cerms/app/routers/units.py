@@ -1,13 +1,3 @@
-"""
-CERMS - Response Units router.
-
-Endpoints:
-  POST  /units/       – register new response unit
-  GET   /units/       – list units (with optional H3 zone filter)
-  GET   /units/{id}   – get single unit
-  PUT   /units/{id}   – update unit (status, location)
-"""
-
 import json
 from typing import Optional, List
 
@@ -29,7 +19,6 @@ def create_unit(
     db: Session = Depends(get_db),
     user: User = Depends(require_permissions("unit.create")),
 ):
-    """Register a new emergency response unit."""
     current_h3 = None
     if body.current_lat is not None and body.current_lng is not None:
         current_h3 = lat_lng_to_h3(body.current_lat, body.current_lng)
@@ -87,7 +76,6 @@ def update_unit(
     db: Session = Depends(get_db),
     user: User = Depends(require_permissions("unit.update")),
 ):
-    """Update unit status and/or GPS location (H3 auto-recomputed)."""
     unit = db.query(ResponseUnit).get(unit_id)
     if not unit:
         raise HTTPException(status_code=404, detail="Unit not found")

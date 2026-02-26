@@ -1,14 +1,3 @@
-"""
-CERMS - Incidents router.
-
-Endpoints:
-  POST   /incidents/           – create incident
-  GET    /incidents/           – list incidents (with optional h3 filter)
-  GET    /incidents/{id}       – get single incident
-  PUT    /incidents/{id}       – update incident
-  POST   /incidents/h3-query   – query incidents by H3 index + k-ring (spatial query)
-"""
-
 import json
 from typing import Optional, List
 
@@ -24,15 +13,9 @@ from app.h3_utils import lat_lng_to_h3, get_k_ring
 router = APIRouter(prefix="/incidents", tags=["Incidents"])
 
 
-# ──────── ABAC helper ────────
-
 def _abac_filter(user: User, incident: Incident):
-    """
-    ABAC Rule: A responder can only access incidents in their assigned zone
-    or the zone's k=1 neighbors. Admins/dispatchers bypass.
-    """
     if user.role in (RoleEnum.ADMIN, RoleEnum.DISPATCHER, RoleEnum.ANALYST, RoleEnum.AUDITOR):
-        return  # full access
+        return
     if user.role == RoleEnum.RESPONDER:
         if not user.assigned_zone_h3:
             raise HTTPException(status_code=403, detail="Responder has no assigned zone")
@@ -44,15 +27,12 @@ def _abac_filter(user: User, incident: Incident):
             )
 
 
-# ──────── Endpoints ────────
-
 @router.post("/", response_model=IncidentOut, status_code=201)
 def create_incident(
     body: IncidentCreate,
     db: Session = Depends(get_db),
     user: User = Depends(require_permissions("incident.create")),
 ):
-    """Report a new emergency incident. H3 index auto-computed from lat/lng."""
     h3_index = lat_lng_to_h3(body.latitude, body.longitude)
 
     incident = Incident(
@@ -67,7 +47,6 @@ def create_incident(
     db.add(incident)
     db.flush()
 
-    # Audit: incident created
     audit = AuditLog(
         user_id=user.id,
         username=user.username,
@@ -90,10 +69,8 @@ def list_incidents(
     db: Session = Depends(get_db),
     user: User = Depends(require_permissions("incident.read")),
 ):
-    """List incidents, optionally filtered by H3 zone and/or status."""
     q = db.query(Incident)
 
-    # ABAC: responders see only their zone
     if user.role == RoleEnum.RESPONDER and user.assigned_zone_h3:
         allowed = get_k_ring(user.assigned_zone_h3, k=1)
         q = q.filter(Incident.h3_index.in_(allowed))
@@ -146,10 +123,6 @@ def query_incidents_by_h3(
     db: Session = Depends(get_db),
     user: User = Depends(require_permissions("incident.read")),
 ):
-    """
-    Spatial query: return all incidents within the given H3 cell
-    and its k-ring neighbors.
-    """
     h3_cells = list(get_k_ring(body.h3_index, body.k_ring))
     results = (
         db.query(Incident)

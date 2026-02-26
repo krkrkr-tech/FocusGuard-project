@@ -1,10 +1,3 @@
-"""
-CERMS - Audit log router.
-
-Endpoints:
-  GET /audit/  – list audit log entries (admin & auditor only)
-"""
-
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -25,7 +18,6 @@ def list_audit_logs(
     db: Session = Depends(get_db),
     user: User = Depends(require_permissions("audit.read")),
 ):
-    """Retrieve audit log entries (newest first). Only admin & auditor roles."""
     q = db.query(AuditLog)
     if action:
         q = q.filter(AuditLog.action == action)

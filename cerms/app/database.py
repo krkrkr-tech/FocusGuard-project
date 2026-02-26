@@ -1,7 +1,3 @@
-"""
-CERMS - Database setup and session management.
-"""
-
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from app.config import DATABASE_URL
@@ -12,7 +8,6 @@ Base = declarative_base()
 
 
 def get_db():
-    """FastAPI dependency — yields a DB session per request."""
     db = SessionLocal()
     try:
         yield db

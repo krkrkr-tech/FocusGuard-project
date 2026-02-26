@@ -1,16 +1,3 @@
-"""
-CERMS - SQLAlchemy ORM Models
-
-Tables:
-  users           – system users (dispatchers, responders, analysts, admins, auditors)
-  zones           – H3-indexed geographic zones with assigned jurisdiction
-  response_units  – vehicles / teams (police car, ambulance, fire truck)
-  incidents       – emergency incidents with H3 spatial index
-  dispatch_events – event-driven dispatch log (unit → incident assignment)
-  audit_log       – immutable audit trail for sensitive actions
-  zone_analytics  – pre-aggregated analytics per H3 zone (materialized view style)
-"""
-
 from datetime import datetime, timezone
 from sqlalchemy import (
     Column, Integer, String, Float, DateTime, Boolean,
@@ -20,8 +7,6 @@ from sqlalchemy.orm import relationship
 from app.database import Base
 import enum
 
-
-# ──────────────────────────── Enums ────────────────────────────
 
 class RoleEnum(str, enum.Enum):
     ADMIN = "admin"
@@ -67,8 +52,6 @@ class DispatchEventType(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
-# ──────────────────────────── Models ────────────────────────────
-
 class User(Base):
     __tablename__ = "users"
 
@@ -79,25 +62,21 @@ class User(Base):
     role = Column(SAEnum(RoleEnum), nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-    # A responder may be linked to a zone (ABAC: can only see incidents in their zone)
     assigned_zone_h3 = Column(String(20), nullable=True)
 
 
 class Zone(Base):
-    """Geographic zone defined by H3 index."""
     __tablename__ = "zones"
 
     id = Column(Integer, primary_key=True, index=True)
     h3_index = Column(String(20), unique=True, nullable=False, index=True)
     name = Column(String(120), nullable=False)
     city = Column(String(80), nullable=False, default="Astana")
-    risk_level = Column(String(20), default="normal")  # normal, elevated, high
+    risk_level = Column(String(20), default="normal")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class ResponseUnit(Base):
-    """Emergency response unit (vehicle/team)."""
     __tablename__ = "response_units"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -113,7 +92,6 @@ class ResponseUnit(Base):
 
 
 class Incident(Base):
-    """Emergency incident report."""
     __tablename__ = "incidents"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -124,7 +102,7 @@ class Incident(Base):
     reported_by = Column(Integer, ForeignKey("users.id"), nullable=False)
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
-    h3_index = Column(String(20), nullable=False, index=True)  # ← H3 spatial index
+    h3_index = Column(String(20), nullable=False, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))
@@ -138,7 +116,6 @@ class Incident(Base):
 
 
 class DispatchEvent(Base):
-    """Event-driven dispatch record — links a unit to an incident."""
     __tablename__ = "dispatch_events"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -153,22 +130,20 @@ class DispatchEvent(Base):
 
 
 class AuditLog(Base):
-    """Immutable audit trail — records sensitive actions."""
     __tablename__ = "audit_log"
 
     id = Column(Integer, primary_key=True, index=True)
     timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     username = Column(String(50), nullable=True)
-    action = Column(String(100), nullable=False)     # e.g. "incident.create", "dispatch.assign"
-    resource_type = Column(String(50), nullable=True) # e.g. "incident", "unit"
+    action = Column(String(100), nullable=False)
+    resource_type = Column(String(50), nullable=True)
     resource_id = Column(Integer, nullable=True)
-    details = Column(Text, nullable=True)             # JSON or free-text
+    details = Column(Text, nullable=True)
     ip_address = Column(String(45), nullable=True)
 
 
 class ZoneAnalytics(Base):
-    """Pre-aggregated analytics per H3 zone (updated periodically or on-demand)."""
     __tablename__ = "zone_analytics"
 
     id = Column(Integer, primary_key=True, index=True)

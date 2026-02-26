@@ -1,14 +1,3 @@
-"""
-CERMS - Zones & Analytics router.
-
-Endpoints:
-  POST  /zones/                – create a zone
-  GET   /zones/                – list zones
-  GET   /zones/h3-info         – H3 resolution metadata
-  GET   /analytics/            – aggregated analytics per H3 zone
-  POST  /analytics/refresh     – recompute zone analytics from raw data
-"""
-
 import json
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
@@ -29,8 +18,6 @@ from app.h3_utils import h3_resolution_info, is_valid_h3
 zone_router = APIRouter(prefix="/zones", tags=["Zones (H3)"])
 analytics_router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
-
-# ═══════════════════════ Zones ═══════════════════════
 
 @zone_router.post("/", response_model=ZoneOut, status_code=201)
 def create_zone(
@@ -57,11 +44,8 @@ def list_zones(
 
 @zone_router.get("/h3-info")
 def get_h3_info(user: User = Depends(require_permissions("zone.read"))):
-    """Return metadata about the H3 resolution used by this system."""
     return h3_resolution_info()
 
-
-# ═══════════════════════ Analytics ═══════════════════════
 
 @analytics_router.get("/", response_model=List[ZoneAnalyticsOut])
 def list_analytics(
@@ -80,15 +64,9 @@ def refresh_analytics(
     db: Session = Depends(get_db),
     user: User = Depends(require_permissions("analytics.read")),
 ):
-    """
-    Recompute zone_analytics from raw incident + dispatch data.
-    Aggregates the last 30 days per distinct H3 zone.
-    Demonstrates H3-based analytics aggregation.
-    """
     now = datetime.now(timezone.utc)
     period_start = now - timedelta(days=30)
 
-    # Get distinct H3 zones from incidents in the period
     h3_zones = (
         db.query(Incident.h3_index)
         .filter(Incident.created_at >= period_start)
@@ -131,7 +109,6 @@ def refresh_analytics(
             .scalar()
         )
 
-        # Upsert analytics row
         existing = db.query(ZoneAnalytics).filter(
             ZoneAnalytics.h3_index == h3_idx,
             ZoneAnalytics.period_start == period_start,

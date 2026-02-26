@@ -1,12 +1,3 @@
-"""
-CERMS - Dispatch router (event-driven component).
-
-Endpoints:
-  POST  /dispatch/          – dispatch a unit to an incident (publishes event)
-  GET   /dispatch/          – list dispatch events
-  POST  /dispatch/resolve   – mark a dispatch as resolved (publishes event)
-"""
-
 import json
 from typing import List
 
@@ -33,24 +24,16 @@ async def create_dispatch(
     db: Session = Depends(get_db),
     user: User = Depends(require_permissions("dispatch.create")),
 ):
-    """
-    Dispatch a response unit to an incident.
-    Creates a DispatchEvent record AND publishes an async event
-    for the event consumer to process (unit/incident status updates).
-    """
-    # Validate incident exists
     incident = db.query(Incident).get(body.incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
 
-    # Validate unit exists and is available
     unit = db.query(ResponseUnit).get(body.unit_id)
     if not unit:
         raise HTTPException(status_code=404, detail="Unit not found")
     if unit.status != UnitStatus.AVAILABLE:
         raise HTTPException(status_code=409, detail=f"Unit {unit.call_sign} is not available (status={unit.status.value})")
 
-    # Create dispatch event record
     dispatch_ev = DispatchEvent(
         incident_id=body.incident_id,
         unit_id=body.unit_id,
@@ -60,7 +43,6 @@ async def create_dispatch(
     db.add(dispatch_ev)
     db.flush()
 
-    # Audit log: dispatch created
     audit = AuditLog(
         user_id=user.id,
         username=user.username,
@@ -77,7 +59,6 @@ async def create_dispatch(
     db.commit()
     db.refresh(dispatch_ev)
 
-    # Publish async event → event consumer will update statuses
     await publish_event({
         "event_type": "dispatch.created",
         "dispatch_event_id": dispatch_ev.id,
@@ -104,10 +85,6 @@ async def resolve_dispatch(
     db: Session = Depends(get_db),
     user: User = Depends(require_permissions("dispatch.create")),
 ):
-    """
-    Mark a dispatch as resolved.
-    Updates incident status to RESOLVED and publishes event to free the unit.
-    """
     incident = db.query(Incident).get(body.incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
@@ -124,7 +101,6 @@ async def resolve_dispatch(
     db.commit()
     db.refresh(dispatch_ev)
 
-    # Publish resolved event → consumer frees the unit
     await publish_event({
         "event_type": "dispatch.resolved",
         "dispatch_event_id": dispatch_ev.id,

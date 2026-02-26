@@ -1,7 +1,3 @@
-"""
-CERMS - Pydantic request / response schemas.
-"""
-
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel, Field
@@ -10,8 +6,6 @@ from app.models import (
     UnitType, UnitStatus, DispatchEventType,
 )
 
-
-# ───────── Auth ─────────
 
 class TokenRequest(BaseModel):
     username: str
@@ -34,8 +28,6 @@ class UserOut(BaseModel):
     class Config:
         from_attributes = True
 
-
-# ───────── Incidents ─────────
 
 class IncidentCreate(BaseModel):
     title: str = Field(..., max_length=200)
@@ -69,8 +61,6 @@ class IncidentOut(BaseModel):
         from_attributes = True
 
 
-# ───────── Response Units ─────────
-
 class UnitCreate(BaseModel):
     call_sign: str = Field(..., max_length=30)
     unit_type: UnitType
@@ -93,8 +83,6 @@ class UnitOut(BaseModel):
         from_attributes = True
 
 
-# ───────── Dispatch ─────────
-
 class DispatchRequest(BaseModel):
     incident_id: int
     unit_id: int
@@ -112,8 +100,6 @@ class DispatchEventOut(BaseModel):
     class Config:
         from_attributes = True
 
-
-# ───────── Zones ─────────
 
 class ZoneCreate(BaseModel):
     h3_index: str
@@ -133,8 +119,6 @@ class ZoneOut(BaseModel):
         from_attributes = True
 
 
-# ───────── Audit ─────────
-
 class AuditLogOut(BaseModel):
     id: int
     timestamp: datetime
@@ -149,8 +133,6 @@ class AuditLogOut(BaseModel):
     class Config:
         from_attributes = True
 
-
-# ───────── Analytics ─────────
 
 class ZoneAnalyticsOut(BaseModel):
     id: int
@@ -168,6 +150,5 @@ class ZoneAnalyticsOut(BaseModel):
 
 
 class H3NeighborQuery(BaseModel):
-    """Query incidents within an H3 hex and its k-ring neighbors."""
     h3_index: str
     k_ring: int = Field(default=1, ge=0, le=5)

@@ -1,17 +1,6 @@
-"""
-CERMS - Database seed script.
-
-Run:  python -m seed
-from the cerms/ directory.
-
-Creates sample users, zones, response units, and incidents
-for demonstration purposes.
-"""
-
 import sys
 import os
 
-# Ensure app package is importable
 sys.path.insert(0, os.path.dirname(__file__))
 
 from app.database import engine, SessionLocal, Base
@@ -26,7 +15,6 @@ def seed():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
 
-    # ─── Check if already seeded ───
     if db.query(User).first():
         print("Database already seeded. Skipping.")
         db.close()
@@ -34,8 +22,6 @@ def seed():
 
     print("Seeding database...")
 
-    # ═══════════════ USERS ═══════════════
-    # Astana city center H3 (≈ 51.1694, 71.4491)
     astana_center_h3 = lat_lng_to_h3(51.1694, 71.4491)
     astana_south_h3 = lat_lng_to_h3(51.1000, 71.4300)
     astana_north_h3 = lat_lng_to_h3(51.2000, 71.4700)
@@ -60,7 +46,6 @@ def seed():
     db.flush()
     print(f"  Created {len(users)} users")
 
-    # ═══════════════ ZONES ═══════════════
     zones = [
         Zone(h3_index=astana_center_h3, name="Astana City Center",
              city="Astana", risk_level="elevated"),
@@ -73,7 +58,6 @@ def seed():
     db.flush()
     print(f"  Created {len(zones)} zones")
 
-    # ═══════════════ RESPONSE UNITS ═══════════════
     units = [
         ResponseUnit(call_sign="POLICE-01", unit_type=UnitType.POLICE,
                      status=UnitStatus.AVAILABLE,
@@ -105,7 +89,6 @@ def seed():
     db.flush()
     print(f"  Created {len(units)} response units")
 
-    # ═══════════════ INCIDENTS ═══════════════
     dispatcher = db.query(User).filter(User.username == "dispatcher1").first()
     incidents = [
         Incident(

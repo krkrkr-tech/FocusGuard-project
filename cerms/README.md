@@ -55,7 +55,7 @@ cerms/
 
 ## Seed Users
 
-| Username     | Password     | Role        |
+| Username    | Password    | Role        |
 |-------------|-------------|-------------|
 | admin       | admin123    | Admin       |
 | dispatcher1 | disp123     | Dispatcher  |

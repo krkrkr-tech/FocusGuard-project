@@ -1,12 +1,3 @@
-"""
-CERMS - Event-driven dispatch simulation.
-
-Uses a simple in-process asyncio queue to simulate an event bus.
-When a dispatch is created, an event is placed on the queue.
-A background consumer processes dispatch events asynchronously
-(e.g., updating unit status, logging).
-"""
-
 import asyncio
 import json
 import logging
@@ -24,21 +15,15 @@ from app.models import (
 
 logger = logging.getLogger("cerms.events")
 
-# ──────────── In-memory async event queue ────────────
 event_queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
 
 
 async def publish_event(event_data: dict):
-    """Place an event on the queue for async processing."""
     await event_queue.put(event_data)
     logger.info(f"Event published: {event_data.get('event_type')}")
 
 
 async def event_consumer():
-    """
-    Background task that continuously processes dispatch events.
-    This simulates an event-driven architecture component.
-    """
     logger.info("Event consumer started — listening for dispatch events...")
     while True:
         try:
@@ -58,7 +43,6 @@ async def event_consumer():
 
 
 async def _handle_event(event_data: dict):
-    """Process a single dispatch event."""
     event_type = event_data.get("event_type")
     db: Session = SessionLocal()
     try:
@@ -66,21 +50,18 @@ async def _handle_event(event_data: dict):
             unit_id = event_data["unit_id"]
             incident_id = event_data["incident_id"]
 
-            # Update unit status → DISPATCHED
             unit = db.query(ResponseUnit).get(unit_id)
             if unit:
                 unit.status = UnitStatus.DISPATCHED
                 db.commit()
                 logger.info(f"Unit {unit.call_sign} status → DISPATCHED")
 
-            # Update incident status → DISPATCHED
             incident = db.query(Incident).get(incident_id)
             if incident and incident.status == IncidentStatus.REPORTED:
                 incident.status = IncidentStatus.DISPATCHED
                 db.commit()
                 logger.info(f"Incident #{incident.id} status → DISPATCHED")
 
-            # Audit log
             audit = AuditLog(
                 user_id=event_data.get("dispatcher_id"),
                 username=event_data.get("dispatcher_username"),
