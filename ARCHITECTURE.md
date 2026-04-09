@@ -32,7 +32,6 @@
                     │
                     └────────────────────► log.txt (Audit Log)
 ```
-
 ## Component Responsibilities
 
 ### 1. **Ticket Model (ticket.py)**
