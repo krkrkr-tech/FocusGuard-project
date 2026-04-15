@@ -7,7 +7,7 @@
 
 I would rate my repository around **6/10**.
 
-Overall, the project works and the main idea is clear — it’s a browser extension that helps users stay focused by blocking distracting websites ([GitHub][1]). However, I can see that it still looks more like a learning project than a fully polished portfolio project.
+Overall, the project works and the main idea is clear — it’s a browser extension that helps users stay focused by blocking distracting websites. However, I can see that it still looks more like a learning project than a fully polished portfolio project.
 
 ---
 
