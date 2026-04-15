@@ -80,7 +80,7 @@ Because of that, it’s harder to understand the development process.
 
 I think the project is:
 
-* good as a practice or учебный project
+* good as a practice or study project
 * but not yet strong enough for a portfolio
 
 To improve it, I need to:
