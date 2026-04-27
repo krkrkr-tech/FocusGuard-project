@@ -3,6 +3,7 @@ Focus Guard Pro — Exam proctoring system.
 
 Run:
     python3.10 -m streamlit run app.py
+Still have a bug with sending the message through telegram bot
 """
 
 import os
@@ -84,11 +85,6 @@ GAZE_GRACE_SEC = 2.5
 
 CHART_HISTORY = 300
 
-# Telegram credentials — load from secrets.py if it exists, else from env vars.
-# Create secrets.py next to app.py with:
-#     TELEGRAM_BOT_TOKEN = "..."
-#     TELEGRAM_CHAT_ID = "..."
-# and add it to .gitignore so it never goes to Git.
 try:
     from secrets_local import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 except ImportError:
@@ -340,7 +336,7 @@ class ViolationManager:
 
 
 # =====================================================================
-# TELEGRAM NOTIFIER
+# TELEGRAM NOTIFIER (with diagnostic logging)
 # =====================================================================
 try:
     import requests
@@ -354,6 +350,10 @@ class TelegramNotifier:
         self.chat_id = TELEGRAM_CHAT_ID
         self.queue = queue.Queue(maxsize=20)
         self.running = True
+        self.last_error = None
+        self.last_success = None
+        self.total_sent = 0
+        self.total_failed = 0
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker.start()
 
@@ -362,11 +362,13 @@ class TelegramNotifier:
 
     def send_screenshot_async(self, frame_bgr, caption):
         if not self.is_configured():
+            self.last_error = "Not configured (no token / chat_id / requests)"
             return False
         try:
             self.queue.put_nowait((frame_bgr, caption))
             return True
         except queue.Full:
+            self.last_error = "Queue full — sender can't keep up"
             return False
 
     def _worker_loop(self):
@@ -378,7 +380,9 @@ class TelegramNotifier:
             try:
                 self._send(frame_bgr, caption)
             except Exception as e:
-                print(f"Telegram send error: {e}")
+                self.last_error = f"Worker exception: {e}"
+                self.total_failed += 1
+                print(f"[Telegram] {self.last_error}")
             finally:
                 self.queue.task_done()
 
@@ -387,16 +391,48 @@ class TelegramNotifier:
             return
         ok, buf = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 80])
         if not ok:
+            self.last_error = "Failed to encode JPEG"
+            self.total_failed += 1
             return
         url = f"https://api.telegram.org/bot{self.bot_token}/sendPhoto"
         files = {'photo': ('violation.jpg', io.BytesIO(buf.tobytes()), 'image/jpeg')}
         data = {'chat_id': self.chat_id, 'caption': caption, 'parse_mode': 'Markdown'}
         try:
-            r = requests.post(url, data=data, files=files, timeout=10)
-            if r.status_code != 200:
-                print(f"Telegram API error {r.status_code}: {r.text[:200]}")
+            r = requests.post(url, data=data, files=files, timeout=15)
+            if r.status_code == 200:
+                self.total_sent += 1
+                self.last_success = time.strftime("%H:%M:%S")
+                self.last_error = None
+                print(f"[Telegram] ✅ Sent at {self.last_success}")
+            else:
+                self.last_error = f"HTTP {r.status_code}: {r.text[:300]}"
+                self.total_failed += 1
+                print(f"[Telegram] ❌ {self.last_error}")
         except requests.RequestException as e:
-            print(f"Telegram network error: {e}")
+            self.last_error = f"Network error: {e}"
+            self.total_failed += 1
+            print(f"[Telegram] ❌ {self.last_error}")
+
+    def send_test_message(self):
+        """Synchronous test — returns (success, message)."""
+        if not self.is_configured():
+            return False, "Not configured"
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        data = {'chat_id': self.chat_id, 'text': '🧪 Focus Guard test message — connection OK'}
+        try:
+            r = requests.post(url, data=data, timeout=10)
+            if r.status_code == 200:
+                self.total_sent += 1
+                self.last_success = time.strftime("%H:%M:%S")
+                return True, "✅ Test sent successfully"
+            else:
+                err = f"HTTP {r.status_code}: {r.text[:300]}"
+                self.last_error = err
+                return False, f"❌ {err}"
+        except requests.RequestException as e:
+            err = f"Network error: {e}"
+            self.last_error = err
+            return False, f"❌ {err}"
 
 
 # =====================================================================
@@ -453,11 +489,24 @@ with st.sidebar:
             st.session_state.pop(key, None)
         st.rerun()
     st.divider()
+
+    st.subheader("📨 Telegram status")
     tg = get_telegram_notifier()
     if tg.is_configured():
-        st.success("✅ Telegram configured")
+        st.success("✅ Configured")
+        if st.button("🧪 Send test message"):
+            ok, msg = tg.send_test_message()
+            if ok:
+                st.success(msg)
+            else:
+                st.error(msg)
+        st.caption(f"Sent: {tg.total_sent} | Failed: {tg.total_failed}")
+        if tg.last_success:
+            st.caption(f"Last sent: {tg.last_success}")
+        if tg.last_error:
+            st.error(f"Last error:\n{tg.last_error}")
     else:
-        st.warning("⚠️ Telegram not configured. Create secrets_local.py or set env vars.")
+        st.warning("⚠️ Not configured. Create secrets_local.py or set env vars.")
 
 col_video, col_side = st.columns([2.2, 1])
 with col_video:
@@ -488,9 +537,6 @@ violation_mgr = ViolationManager(VIOLATION_COOLDOWN, NO_FACE_GRACE_SEC, GAZE_GRA
 run = st.checkbox("🎥 Start camera", value=False)
 
 
-# =====================================================================
-# MAIN LOOP
-# =====================================================================
 if run:
     cam = CameraStream(src=CAMERA_INDEX, width=FRAME_WIDTH, height=FRAME_HEIGHT)
     if not cam.start():
@@ -574,7 +620,9 @@ if run:
                 if enable_telegram and telegram is not None:
                     caption = (f"🚨 *Violation detected*\n👤 Student: {student_name}\n"
                                f"⏰ Time: {ts}\n📋 Type: {vio_text}\n📉 Focus: {int(focus_score)}%")
-                    telegram.send_screenshot_async(display_frame.copy(), caption)
+                    queued = telegram.send_screenshot_async(display_frame.copy(), caption)
+                    if not queued:
+                        print(f"[Telegram] Could not queue: {telegram.last_error}")
 
             if active_violations:
                 status_text, status_color = "🔴 VIOLATION", "#ff4444"
@@ -622,7 +670,11 @@ if run:
                 violations_html = "<div style='color:#888'>No violations yet ✅</div>"
             violations_placeholder.markdown(violations_html, unsafe_allow_html=True)
 
-            if len(focus_scores) > 1:
+            if 'chart_counter' not in st.session_state:
+                st.session_state.chart_counter = 0
+            st.session_state.chart_counter += 1
+
+            if len(focus_scores) > 1 and st.session_state.chart_counter % 15 == 0:
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
                     y=list(focus_scores), mode='lines',
@@ -631,7 +683,9 @@ if run:
                 fig.update_layout(
                     title="Focus over time", yaxis_range=[0, 100], height=220,
                     template="plotly_dark", margin=dict(l=10, r=10, t=40, b=10))
-                chart_placeholder.plotly_chart(fig, use_container_width=True)
+                with chart_placeholder.container():
+                    st.plotly_chart(fig, use_container_width=True,
+                                    key=f"fc_{st.session_state.chart_counter}")
 
             time.sleep(0.005)
     finally:
