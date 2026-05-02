@@ -1,6 +1,10 @@
 streamlit
-opencv-python
-dlib
+streamlit-webrtc
+opencv-python-headless
 numpy
 scipy
+dlib
 plotly
+ultralytics
+requests
+av==14.2.0
