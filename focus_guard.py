@@ -9,10 +9,22 @@ import plotly.graph_objects as go
 import threading
 import queue
 import io
+import av
+from streamlit_webrtc import (
+    RTCConfiguration,
+    VideoProcessorBase,
+    WebRtcMode,
+    webrtc_streamer,
+)
 
 
-TELEGRAM_BOT_TOKEN = ""
-TELEGRAM_CHAT_ID   = ""
+TELEGRAM_BOT_TOKEN = "8702324957:AAE45czlrbs5nt9q7uxxwgukArUpNjoZ-j0"
+TELEGRAM_CHAT_ID   = "-1003964944926"
+
+RTC_CONFIGURATION = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
+METRICS_QUEUE = queue.Queue(maxsize=30)
 
 
 # settings
@@ -183,6 +195,201 @@ def load_models():
 
 detector, predictor = load_models()
 
+
+class FocusVideoProcessor(VideoProcessorBase):
+    def __init__(self, detector, predictor, yolo_model, notifier, settings):
+        self.detector = detector
+        self.predictor = predictor
+        self.yolo_model = yolo_model
+        self.notifier = notifier
+        self.settings = settings
+        self.violation_mgr = ViolationManager(VIOLATION_COOLDOWN, GAZE_GRACE_SEC)
+
+        self.session_start = time.time()
+        self.total_blinks = 0
+        self.frame_counter = 0
+        self.last_blink_time = time.time()
+        self.focus_scores = deque(maxlen=400)
+        self.yolo_frame_cnt = 0
+        self.last_yolo_objects = []
+
+    def _push_metrics(self, data):
+        try:
+            METRICS_QUEUE.put_nowait(data)
+        except queue.Full:
+            try:
+                METRICS_QUEUE.get_nowait()
+                METRICS_QUEUE.put_nowait(data)
+            except queue.Empty:
+                pass
+
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        img = cv2.flip(img, 1)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = self.detector(gray, 0)
+
+        current_ear = 0.0
+        gaze_direction = "👀 Looking Center"
+        faces_count = len(faces)
+        person_absent = faces_count == 0
+
+        if person_absent:
+            gaze_direction = "🚫 No person detected"
+
+        for face in faces:
+            cv2.rectangle(img, (face.left(), face.top()), (face.right(), face.bottom()), (0, 255, 120), 3)
+            landmarks = self.predictor(gray, face).parts()
+
+            left_eye_pts = landmarks[36:42]
+            right_eye_pts = landmarks[42:48]
+            current_ear = (eye_aspect_ratio(left_eye_pts) + eye_aspect_ratio(right_eye_pts)) / 2.0
+
+            left_bbox = get_bounding_box(left_eye_pts)
+            right_bbox = get_bounding_box(right_eye_pts)
+
+            left_eye_frame = img[left_bbox[1]:left_bbox[3], left_bbox[0]:left_bbox[2]]
+            right_eye_frame = img[right_bbox[1]:right_bbox[3], right_bbox[0]:right_bbox[2]]
+
+            left_iris = get_iris_center(left_eye_frame)
+            right_iris = get_iris_center(right_eye_frame)
+
+            cv2.rectangle(img, (left_bbox[0], left_bbox[1]), (left_bbox[2], left_bbox[3]), (255, 100, 255), 2)
+            cv2.rectangle(img, (right_bbox[0], right_bbox[1]), (right_bbox[2], right_bbox[3]), (255, 100, 255), 2)
+
+            for pt in list(left_eye_pts) + list(right_eye_pts):
+                cv2.circle(img, (pt.x, pt.y), 2, (0, 255, 255), -1)
+
+            if left_iris and right_iris:
+                left_ratio = left_iris[0] / max(1, left_eye_frame.shape[1])
+                right_ratio = right_iris[0] / max(1, right_eye_frame.shape[1])
+                avg_ratio = (left_ratio + right_ratio) / 2.0
+
+                if avg_ratio < (0.5 - GAZE_THRESHOLD):
+                    gaze_direction = "👈 Looking Left"
+                elif avg_ratio > (0.5 + GAZE_THRESHOLD):
+                    gaze_direction = "👉 Looking Right"
+                else:
+                    gaze_direction = "👀 Looking Center"
+
+                lx = left_bbox[0] + left_iris[0]
+                ly = left_bbox[1] + left_iris[1]
+                rx = right_bbox[0] + right_iris[0]
+                ry = right_bbox[1] + right_iris[1]
+                cv2.circle(img, (int(lx), int(ly)), 6, (0, 255, 255), -1)
+                cv2.circle(img, (int(rx), int(ry)), 6, (0, 255, 255), -1)
+
+            if current_ear < EAR_THRESHOLD:
+                self.frame_counter += 1
+                if self.frame_counter >= EAR_CONSEC_FRAMES and time.time() - self.last_blink_time > 0.4:
+                    self.total_blinks += 1
+                    self.last_blink_time = time.time()
+            else:
+                self.frame_counter = 0
+
+        if self.settings["enable_yolo"] and self.yolo_model is not None:
+            self.yolo_frame_cnt += 1
+            if self.yolo_frame_cnt >= YOLO_EVERY_N_FRAMES:
+                self.yolo_frame_cnt = 0
+                try:
+                    results = self.yolo_model.predict(img, imgsz=YOLO_IMG_SIZE, conf=YOLO_CONF, verbose=False)
+                    self.last_yolo_objects = []
+                    if results and results[0].boxes is not None:
+                        result = results[0]
+                        for box, conf, cid in zip(
+                            result.boxes.xyxy.cpu().numpy(),
+                            result.boxes.conf.cpu().numpy(),
+                            result.boxes.cls.cpu().numpy().astype(int),
+                        ):
+                            cname = self.yolo_model.names.get(int(cid), str(cid))
+                            if cname in SUSPICIOUS_OBJECTS:
+                                x1, y1, x2, y2 = box.astype(int)
+                                self.last_yolo_objects.append({
+                                    "class": cname,
+                                    "conf": float(conf),
+                                    "box": (int(x1), int(y1), int(x2), int(y2)),
+                                })
+                except Exception:
+                    pass
+
+            for obj in self.last_yolo_objects:
+                x1, y1, x2, y2 = obj["box"]
+                label = f"{obj['class']} {obj['conf']:.2f}"
+                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                cv2.putText(img, label, (x1 + 2, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+        session_time = max(1, time.time() - self.session_start)
+        blink_rate_per_min = (self.total_blinks / session_time) * 60
+        absence_penalty = 77 if person_absent else 0
+        gaze_penalty = 35 if (not person_absent and gaze_direction != "👀 Looking Center") else 0
+        blink_penalty = max(0, (blink_rate_per_min - MAX_BLINK_RATE) * 0.8)
+        extra_face_penalty = 40 if faces_count > 1 else 0
+        object_penalty = len(self.last_yolo_objects) * 25
+        focus_score = max(15, min(100, 92 - absence_penalty - gaze_penalty - blink_penalty - extra_face_penalty - object_penalty))
+        self.focus_scores.append(focus_score)
+
+        active_violations = []
+        if self.settings["track_absence"] and person_absent:
+            active_violations.append(("person_absent", "🚫 Человек отсутствует в кадре"))
+        if self.settings["track_gaze"] and not person_absent and gaze_direction != "👀 Looking Center":
+            active_violations.append(("gaze_away", f"👀 {gaze_direction}"))
+        if self.settings["track_extra"] and faces_count > 1:
+            active_violations.append(("extra_face", f"👥 {faces_count} человека в кадре"))
+        for obj in self.last_yolo_objects:
+            cls = obj["class"]
+            if self.settings["track_phone"] and cls in ("cell phone", "remote"):
+                active_violations.append(("phone", f"📱 Телефон (conf {obj['conf']:.2f})"))
+            elif self.settings["track_book"] and cls == "book":
+                active_violations.append(("book", f"📚 Книга (conf {obj['conf']:.2f})"))
+            elif self.settings["track_objects"] and cls in ("laptop", "tv"):
+                active_violations.append((cls, f"💻 {cls} (conf {obj['conf']:.2f})"))
+
+        confirmed_log = []
+        confirmed = self.violation_mgr.check(active_violations)
+        for _, vio_text in confirmed:
+            ts = time.strftime("%H:%M:%S")
+            confirmed_log.append(f"[{ts}] {vio_text}")
+            if self.settings["enable_telegram"] and self.notifier.is_configured():
+                caption = (
+                    f"🚨 *Нарушение*\n"
+                    f"👤 Студент: {self.settings['student_name']}\n"
+                    f"⏰ Время: {ts}\n"
+                    f"📋 Тип: {vio_text}\n"
+                    f"📉 Фокус: {int(focus_score)}%"
+                )
+                self.notifier.send_async(img, caption)
+
+        if person_absent:
+            status, color = "🔴 ЧЕЛОВЕКА НЕТ В КАДРЕ", "#ff4444"
+            cv2.rectangle(img, (0, 0), (img.shape[1], img.shape[0]), (0, 0, 255), 6)
+        elif active_violations:
+            status, color = "🔴 НАРУШЕНИЕ", "#ff4444"
+            cv2.rectangle(img, (0, 0), (img.shape[1], img.shape[0]), (0, 0, 255), 6)
+        elif focus_score > 78:
+            status, color = "🟢 Всё хорошо!", "#00ff9d"
+        elif focus_score > 55:
+            status, color = "🟡 Держи взгляд на экране", "#ffcc00"
+        else:
+            status, color = "🔴 Вернись к экрану", "#ff4444"
+
+        cv2.putText(img, f"Focus: {int(focus_score)}%", (30, 55), cv2.FONT_HERSHEY_DUPLEX, 1.25, (255, 255, 255), 3)
+        cv2.putText(img, gaze_direction, (30, 95), cv2.FONT_HERSHEY_DUPLEX, 0.95, (0, 255, 255), 2)
+        cv2.putText(img, f"Faces: {faces_count}", (30, 130), cv2.FONT_HERSHEY_DUPLEX, 0.8, (0, 255, 120), 2)
+
+        self._push_metrics({
+            "focus_score": focus_score,
+            "gaze_direction": gaze_direction,
+            "blink_rate_per_min": blink_rate_per_min,
+            "session_time": session_time,
+            "status": status,
+            "color": color,
+            "active_violations": [text for _, text in active_violations],
+            "confirmed_log": confirmed_log,
+            "focus_scores": list(self.focus_scores),
+        })
+
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
+
 # STREAMLIT APP
 st.set_page_config(page_title="Focus Guard", page_icon="🧠", layout="wide")
 
@@ -226,15 +433,14 @@ with st.sidebar:
         st.warning("⚠️ Укажи TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в коде")
 
     if st.button("🔄 Сбросить сессию"):
-        for k in ["session_start", "violations_log"]:
+        for k in ["session_start", "violations_log", "chart_counter"]:
             st.session_state.pop(k, None)
         st.rerun()
 
 col_video, col_side = st.columns([2.2, 1])
 
 with col_video:
-    video_placeholder = st.empty()
-    chart_placeholder = st.empty()
+    st.subheader("🎥 Камера")
 
 with col_side:
     st.subheader("📊 Текущее состояние")
@@ -250,223 +456,100 @@ if "session_start" not in st.session_state:
     st.session_state.session_start = time.time()
 if "violations_log" not in st.session_state:
     st.session_state.violations_log = deque(maxlen=20)
+if "chart_counter" not in st.session_state:
+    st.session_state.chart_counter = 0
 
-violation_mgr = ViolationManager(VIOLATION_COOLDOWN, GAZE_GRACE_SEC)
-yolo_model    = load_object_detector() if enable_yolo else None
+settings = {
+    "student_name": student_name,
+    "enable_telegram": enable_telegram,
+    "enable_yolo": enable_yolo,
+    "track_absence": track_absence,
+    "track_gaze": track_gaze,
+    "track_extra": track_extra,
+    "track_phone": track_phone,
+    "track_book": track_book,
+    "track_objects": track_objects,
+}
+yolo_model = load_object_detector() if enable_yolo else None
 
-run = st.checkbox("🎥 Запустить камеру", value=True)
+with col_video:
+    webrtc_ctx = webrtc_streamer(
+        key="focus-guard-camera",
+        mode=WebRtcMode.SENDRECV,
+        rtc_configuration=RTC_CONFIGURATION,
+        media_stream_constraints={"video": True, "audio": False},
+        video_processor_factory=lambda: FocusVideoProcessor(
+            detector, predictor, yolo_model, notifier, settings
+        ),
+        async_processing=True,
+    )
+    chart_placeholder = st.empty()
 
-if run:
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        st.error("❌ Не удалось открыть камеру.")
-        st.stop()
+focus_placeholder.metric("Уровень фокуса", "—")
+gaze_placeholder.markdown("**Взгляд:** —")
+blink_placeholder.metric("Моргания/мин", "—")
+timer_placeholder.metric("Время сессии", "0 с")
+status_placeholder.markdown("<h3 style='color:#888; margin:0;'>Ожидание камеры</h3>", unsafe_allow_html=True)
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 800)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 600)
+if not webrtc_ctx.state.playing:
+    violations_placeholder.markdown("<div style='color:#888'>Нажми START и разреши доступ к камере</div>", unsafe_allow_html=True)
 
-    total_blinks      = 0
-    frame_counter     = 0
-    last_blink_time   = time.time()
-    focus_scores      = deque(maxlen=400)
-    yolo_frame_cnt    = 0
-    last_yolo_objects = []
-    chart_counter     = 0
+while webrtc_ctx.state.playing:
+    try:
+        data = METRICS_QUEUE.get(timeout=1.0)
+    except queue.Empty:
+        continue
 
-    while run:
-        ret, frame = cap.read()
-        if not ret:
-            st.error("Ошибка чтения кадра")
-            break
+    for log_item in data["confirmed_log"]:
+        st.session_state.violations_log.appendleft(log_item)
 
-        frame = cv2.flip(frame, 1)
-        gray  = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = detector(gray, 0)
+    focus_placeholder.metric("Уровень фокуса", f"{int(data['focus_score'])}%")
+    gaze_placeholder.markdown(f"**Взгляд:** {data['gaze_direction']}")
+    blink_placeholder.metric("Моргания/мин", f"{data['blink_rate_per_min']:.1f}")
+    timer_placeholder.metric("Время сессии", f"{int(data['session_time'])} с")
+    status_placeholder.markdown(
+        f"<h3 style='color:{data['color']}; margin:0;'>{data['status']}</h3>",
+        unsafe_allow_html=True,
+    )
 
-        current_ear    = 0.0
-        gaze_direction = "👀 Looking Center"
-        faces_count    = len(faces)
-        person_absent  = faces_count == 0
+    if st.session_state.violations_log:
+        violations_html = "".join(
+            f"<div class='violation-row'>{v}</div>"
+            for v in list(st.session_state.violations_log)[:10]
+        )
+    elif data["active_violations"]:
+        violations_html = "".join(
+            f"<div class='violation-row'>{v}</div>"
+            for v in data["active_violations"][:10]
+        )
+    else:
+        violations_html = "<div style='color:#888'>Нарушений нет ✅</div>"
+    violations_placeholder.markdown(violations_html, unsafe_allow_html=True)
 
-        if person_absent:
-            gaze_direction = "🚫 No person detected"
+    st.session_state.chart_counter += 1
+    focus_scores = data["focus_scores"]
+    if len(focus_scores) > 1 and st.session_state.chart_counter % 15 == 0:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            y=focus_scores,
+            mode="lines",
+            line=dict(color="#00ff9d", width=4),
+            fill="tozeroy",
+            fillcolor="rgba(0,255,157,0.1)",
+        ))
+        fig.update_layout(
+            title="Фокус по времени",
+            yaxis_range=[0, 100],
+            height=280,
+            template="plotly_dark",
+            margin=dict(l=10, r=10, t=40, b=10),
+        )
+        chart_placeholder.plotly_chart(
+            fig,
+            use_container_width=True,
+            key=f"fc_{st.session_state.chart_counter}",
+        )
 
-        for face in faces:
-            cv2.rectangle(frame, (face.left(), face.top()), (face.right(), face.bottom()), (0, 255, 120), 3)
-            landmarks = predictor(gray, face).parts()
-
-            left_eye_pts  = landmarks[36:42]
-            right_eye_pts = landmarks[42:48]
-            current_ear   = (eye_aspect_ratio(left_eye_pts) + eye_aspect_ratio(right_eye_pts)) / 2.0
-
-            left_bbox  = get_bounding_box(left_eye_pts)
-            right_bbox = get_bounding_box(right_eye_pts)
-
-            left_eye_frame  = frame[left_bbox[1]:left_bbox[3], left_bbox[0]:left_bbox[2]]
-            right_eye_frame = frame[right_bbox[1]:right_bbox[3], right_bbox[0]:right_bbox[2]]
-
-            left_iris  = get_iris_center(left_eye_frame)
-            right_iris = get_iris_center(right_eye_frame)
-
-            cv2.rectangle(frame, (left_bbox[0], left_bbox[1]),  (left_bbox[2], left_bbox[3]),  (255, 100, 255), 2)
-            cv2.rectangle(frame, (right_bbox[0], right_bbox[1]), (right_bbox[2], right_bbox[3]), (255, 100, 255), 2)
-
-            for pt in list(left_eye_pts) + list(right_eye_pts):
-                cv2.circle(frame, (pt.x, pt.y), 2, (0, 255, 255), -1)
-
-            if left_iris and right_iris:
-                left_ratio  = left_iris[0]  / max(1, left_eye_frame.shape[1])
-                right_ratio = right_iris[0] / max(1, right_eye_frame.shape[1])
-                avg_ratio   = (left_ratio + right_ratio) / 2.0
-
-                if avg_ratio < (0.5 - GAZE_THRESHOLD):
-                    gaze_direction = "👈 Looking Left"
-                elif avg_ratio > (0.5 + GAZE_THRESHOLD):
-                    gaze_direction = "👉 Looking Right"
-                else:
-                    gaze_direction = "👀 Looking Center"
-
-                lx = left_bbox[0]  + left_iris[0];  ly = left_bbox[1]  + left_iris[1]
-                rx = right_bbox[0] + right_iris[0]; ry = right_bbox[1] + right_iris[1]
-                cv2.circle(frame, (int(lx), int(ly)), 6, (0, 255, 255), -1)
-                cv2.circle(frame, (int(rx), int(ry)), 6, (0, 255, 255), -1)
-
-            if current_ear < EAR_THRESHOLD:
-                frame_counter += 1
-                if frame_counter >= EAR_CONSEC_FRAMES and time.time() - last_blink_time > 0.4:
-                    total_blinks += 1
-                    last_blink_time = time.time()
-            else:
-                frame_counter = 0
-
-        # YOLO
-        if enable_yolo and yolo_model is not None:
-            yolo_frame_cnt += 1
-            if yolo_frame_cnt >= YOLO_EVERY_N_FRAMES:
-                yolo_frame_cnt = 0
-                try:
-                    results = yolo_model.predict(frame, imgsz=YOLO_IMG_SIZE, conf=YOLO_CONF, verbose=False)
-                    last_yolo_objects = []
-                    if results and results[0].boxes is not None:
-                        r = results[0]
-                        for box, conf, cid in zip(
-                            r.boxes.xyxy.cpu().numpy(),
-                            r.boxes.conf.cpu().numpy(),
-                            r.boxes.cls.cpu().numpy().astype(int)
-                        ):
-                            cname = yolo_model.names.get(int(cid), str(cid))
-                            if cname in SUSPICIOUS_OBJECTS:
-                                x1, y1, x2, y2 = box.astype(int)
-                                last_yolo_objects.append({
-                                    "class": cname, "conf": float(conf),
-                                    "box": (int(x1), int(y1), int(x2), int(y2))
-                                })
-                except Exception:
-                    pass
-
-            for obj in last_yolo_objects:
-                x1, y1, x2, y2 = obj["box"]
-                label = f"{obj['class']} {obj['conf']:.2f}"
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                cv2.putText(frame, label, (x1 + 2, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-        # FOCUS
-        session_time       = max(1, time.time() - st.session_state.session_start)
-        blink_rate_per_min = (total_blinks / session_time) * 60
-        absence_penalty    = 77 if person_absent else 0
-        gaze_penalty       = 35 if (not person_absent and gaze_direction != "👀 Looking Center") else 0
-        blink_penalty      = max(0, (blink_rate_per_min - MAX_BLINK_RATE) * 0.8)
-        extra_face_penalty = 40 if faces_count > 1 else 0
-        object_penalty     = len(last_yolo_objects) * 25
-        focus_score        = max(15, min(100, 92 - absence_penalty - gaze_penalty - blink_penalty - extra_face_penalty - object_penalty))
-        focus_scores.append(focus_score)
-
-        # VIOLATIONS
-        active_violations = []
-        if track_absence and person_absent:
-            active_violations.append(("person_absent", "🚫 Человек отсутствует в кадре"))
-        if track_gaze and not person_absent and gaze_direction != "👀 Looking Center":
-            active_violations.append(("gaze_away", f"👀 {gaze_direction}"))
-        if track_extra and faces_count > 1:
-            active_violations.append(("extra_face", f"👥 {faces_count} человека в кадре"))
-        for obj in last_yolo_objects:
-            cls = obj["class"]
-            if track_phone and cls in ("cell phone", "remote"):
-                active_violations.append(("phone", f"📱 Телефон (conf {obj['conf']:.2f})"))
-            elif track_book and cls == "book":
-                active_violations.append(("book", f"📚 Книга (conf {obj['conf']:.2f})"))
-            elif track_objects and cls in ("laptop", "tv"):
-                active_violations.append((cls, f"💻 {cls} (conf {obj['conf']:.2f})"))
-
-        confirmed = violation_mgr.check(active_violations)
-        for vio_type, vio_text in confirmed:
-            ts = time.strftime("%H:%M:%S")
-            st.session_state.violations_log.appendleft(f"[{ts}] {vio_text}")
-            if enable_telegram and notifier.is_configured():
-                caption = (
-                    f"🚨 *Нарушение*\n"
-                    f"👤 Студент: {student_name}\n"
-                    f"⏰ Время: {ts}\n"
-                    f"📋 Тип: {vio_text}\n"
-                    f"📉 Фокус: {int(focus_score)}%"
-                )
-                notifier.send_async(frame, caption)
-
-        # STATUS
-        if person_absent:
-            status, color = "🔴 ЧЕЛОВЕКА НЕТ В КАДРЕ", "#ff4444"
-            cv2.rectangle(frame, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 255), 6)
-        elif active_violations:
-            status, color = "🔴 НАРУШЕНИЕ", "#ff4444"
-            cv2.rectangle(frame, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 255), 6)
-        elif focus_score > 78:
-            status, color = "🟢 Всё хорошо!", "#00ff9d"
-        elif focus_score > 55:
-            status, color = "🟡 Держи взгляд на экране", "#ffcc00"
-        else:
-            status, color = "🔴 Вернись к экрану", "#ff4444"
-
-        cv2.putText(frame, f"Focus: {int(focus_score)}%", (30, 55),  cv2.FONT_HERSHEY_DUPLEX, 1.25, (255, 255, 255), 3)
-        cv2.putText(frame, gaze_direction,                 (30, 95),  cv2.FONT_HERSHEY_DUPLEX, 0.95, (0, 255, 255),   2)
-        cv2.putText(frame, f"Faces: {faces_count}",        (30, 130), cv2.FONT_HERSHEY_DUPLEX, 0.8,  (0, 255, 120),   2)
-
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        video_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
-
-        focus_placeholder.metric("Уровень фокуса", f"{int(focus_score)}%")
-        gaze_placeholder.markdown(f"**Взгляд:** {gaze_direction}")
-        blink_placeholder.metric("Моргания/мин", f"{blink_rate_per_min:.1f}")
-        timer_placeholder.metric("Время сессии", f"{int(session_time)} с")
-        status_placeholder.markdown(f"<h3 style='color:{color}; margin:0;'>{status}</h3>", unsafe_allow_html=True)
-
-        if st.session_state.violations_log:
-            violations_html = "".join(
-                f"<div class='violation-row'>{v}</div>"
-                for v in list(st.session_state.violations_log)[:10]
-            )
-        else:
-            violations_html = "<div style='color:#888'>Нарушений нет ✅</div>"
-        violations_placeholder.markdown(violations_html, unsafe_allow_html=True)
-
-        chart_counter += 1
-        if len(focus_scores) > 1 and chart_counter % 15 == 0:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                y=list(focus_scores), mode="lines",
-                line=dict(color="#00ff9d", width=4),
-                fill="tozeroy", fillcolor="rgba(0,255,157,0.1)"
-            ))
-            fig.update_layout(
-                title="Фокус по времени", yaxis_range=[0, 100], height=280,
-                template="plotly_dark", margin=dict(l=10, r=10, t=40, b=10)
-            )
-            chart_placeholder.plotly_chart(fig, use_container_width=True, key=f"fc_{chart_counter}")
-
-        time.sleep(0.03)
-
-    cap.release()
-
-else:
-    st.info("👆 Нажми чекбокс выше, чтобы начать")
+    time.sleep(0.05)
 
 st.caption("Focus Guard • dlib + YOLOv8 + Telegram")
