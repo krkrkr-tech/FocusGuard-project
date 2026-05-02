@@ -197,7 +197,7 @@ detector, predictor = load_models()
 
 
 class FocusVideoProcessor(VideoProcessorBase):
-    def __init__(self, detector, predictor, yolo_model, notifier, settings):
+    def __init__(self, detector, predictor, yolo_model, notifier, settings, session_start=None):
         self.detector = detector
         self.predictor = predictor
         self.yolo_model = yolo_model
@@ -205,7 +205,7 @@ class FocusVideoProcessor(VideoProcessorBase):
         self.settings = settings
         self.violation_mgr = ViolationManager(VIOLATION_COOLDOWN, GAZE_GRACE_SEC)
 
-        self.session_start = time.time()
+        self.session_start = session_start if session_start is not None else time.time()
         self.total_blinks = 0
         self.frame_counter = 0
         self.last_blink_time = time.time()
@@ -454,6 +454,7 @@ with col_side:
 
 if "session_start" not in st.session_state:
     st.session_state.session_start = time.time()
+_session_start = st.session_state.session_start
 if "violations_log" not in st.session_state:
     st.session_state.violations_log = deque(maxlen=20)
 if "chart_counter" not in st.session_state:
@@ -479,7 +480,8 @@ with col_video:
         rtc_configuration=RTC_CONFIGURATION,
         media_stream_constraints={"video": True, "audio": False},
         video_processor_factory=lambda: FocusVideoProcessor(
-            detector, predictor, yolo_model, notifier, settings
+            detector, predictor, yolo_model, notifier, settings,
+            session_start=_session_start,
         ),
         async_processing=True,
     )
