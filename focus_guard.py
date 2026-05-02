@@ -18,8 +18,8 @@ from streamlit_webrtc import (
 )
 
 
-TELEGRAM_BOT_TOKEN = "8702324957:AAE45czlrbs5nt9q7uxxwgukArUpNjoZ-j0"
-TELEGRAM_CHAT_ID   = "-1003964944926"
+TELEGRAM_BOT_TOKEN = ""
+TELEGRAM_CHAT_ID   = ""
 
 RTC_CONFIGURATION = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
