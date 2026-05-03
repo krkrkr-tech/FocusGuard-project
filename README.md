@@ -231,3 +231,7 @@ This project is licensed under the MIT License — see [LICENSE](LICENSE) for de
 Made with ❤️ for the Capstone Project · Focus Guard Team
 
 </div>
+
+Team members:
+Kairat Gaziz 230103270
+Koshamet Alikhan 230103117
