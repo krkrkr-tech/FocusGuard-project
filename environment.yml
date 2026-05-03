@@ -1,0 +1,20 @@
+name: base
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - dlib=19.24.2
+  - opencv
+  - numpy
+  - scipy
+  - pip
+  - pip:
+    - streamlit
+    - streamlit-webrtc
+    - av
+    - ultralytics
+    - torch
+    - torchvision
+    - plotly
+    - requests
