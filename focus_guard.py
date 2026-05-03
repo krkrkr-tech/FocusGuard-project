@@ -19,7 +19,7 @@ RTC_CONFIGURATION  = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.goo
 
 EAR_THRESHOLD       = 0.20
 EAR_CONSEC_FRAMES   = 3
-GAZE_THRESHOLD      = 0.12   
+GAZE_THRESHOLD      = 0.12   # iris offset ratio to trigger left/right
 MAX_BLINK_RATE      = 25
 YOLO_MODEL          = "yolov8n.pt"
 YOLO_EVERY_N_FRAMES = 5
@@ -172,27 +172,30 @@ class FocusProcessor(VideoProcessorBase):
         gaze_cv = "No person" if person_absent else "Center"
         gaze_ui = "🚫 None"   if person_absent else "👀 Center"
 
+        # Аннотированная копия — только для Telegram скриншотов
+        ann = img.copy()
+
         if results.multi_face_landmarks:
             for face_lm in results.multi_face_landmarks:
                 lm = face_lm.landmark
 
-                # ── Bounding box из landmarks ──────────────────────────────
+                # ── Bounding box (только в ann) ────────────────────────────
                 xs = [int(l.x * w) for l in lm]
                 ys = [int(l.y * h) for l in lm]
                 x1, y1, x2, y2 = max(0,min(xs)-8), max(0,min(ys)-8), \
                                   min(w,max(xs)+8), min(h,max(ys)+8)
-                cv2.rectangle(img, (x1,y1), (x2,y2), (0,255,120), 2)
+                cv2.rectangle(ann, (x1,y1), (x2,y2), (0,255,120), 2)
 
-                # ── Точки глаз ─────────────────────────────────────────────
+                # ── Точки глаз (только в ann) ──────────────────────────────
                 for idx in L_EAR_IDX + R_EAR_IDX:
                     px, py = int(lm[idx].x*w), int(lm[idx].y*h)
-                    cv2.circle(img, (px,py), 2, (0,255,255), -1)
+                    cv2.circle(ann, (px,py), 2, (0,255,255), -1)
 
-                # ── Радужки ────────────────────────────────────────────────
+                # ── Радужки (только в ann) ─────────────────────────────────
                 for iris_idx in [L_IRIS_IDX, R_IRIS_IDX]:
                     ix = int(lm[iris_idx].x * w)
                     iy = int(lm[iris_idx].y * h)
-                    cv2.circle(img, (ix,iy), 4, (255,80,80), -1)
+                    cv2.circle(ann, (ix,iy), 5, (255,80,80), -1)
 
                 # ── EAR / blink ────────────────────────────────────────────
                 l_ear = ear(lm, L_EAR_IDX, w, h)
@@ -207,7 +210,7 @@ class FocusProcessor(VideoProcessorBase):
                 else:
                     self.frame_counter = 0
 
-                # ── Gaze — iris position relative to eye width ─────────────
+                # ── Gaze ───────────────────────────────────────────────────
                 l_ratio = iris_ratio(lm, L_IRIS_IDX, L_EYE_LEFT, L_EYE_RIGHT, w, h)
                 r_ratio = iris_ratio(lm, R_IRIS_IDX, R_EYE_LEFT, R_EYE_RIGHT, w, h)
                 avg_ratio = (l_ratio + r_ratio) / 2.0
@@ -215,18 +218,17 @@ class FocusProcessor(VideoProcessorBase):
                 smooth = sum(self._gaze_buf) / len(self._gaze_buf)
 
                 if smooth < 0.5 - GAZE_THRESHOLD:
-                    gaze_cv, gaze_ui = "Left",        "👈 Left"
+                    gaze_cv, gaze_ui = "Left",  "👈 Left"
                 elif smooth > 0.5 + GAZE_THRESHOLD:
-                    gaze_cv, gaze_ui = "Right",       "👉 Right"
+                    gaze_cv, gaze_ui = "Right", "👉 Right"
                 else:
                     dev = abs(smooth - 0.5)
                     if dev > GAZE_THRESHOLD * 0.6:
-                        side = "Left" if smooth < 0.5 else "Right"
-                        arrow = "👈" if smooth < 0.5 else "👉"
+                        side  = "Left" if smooth < 0.5 else "Right"
+                        arrow = "👈"   if smooth < 0.5 else "👉"
                         gaze_cv, gaze_ui = f"Slight {side}", f"{arrow} Slight {side}"
                     else:
                         gaze_cv, gaze_ui = "Center", "👀 Center"
-
         else:
             self._gaze_buf.clear()
 
@@ -286,29 +288,35 @@ class FocusProcessor(VideoProcessorBase):
             ts = time.strftime("%H:%M:%S")
             self.violations_log.appendleft(f"[{ts}] {vtext}")
             if settings.get("enable_telegram"):
-                self.notifier.send(img,
+                self.notifier.send(ann,
                     f"🚨 *Violation*\n👤 {settings.get('student_name','?')}\n"
                     f"⏰ {ts}\n📋 {vtext}\n📉 Focus: {int(score)}%")
 
         # ── Status ─────────────────────────────────────────────────────────
         if person_absent:
             status, color = "🔴 No person",  "#ff4444"
-            cv2.rectangle(img,(0,0),(w,h),(0,0,200),4)
+            cv2.rectangle(ann,(0,0),(w,h),(0,0,200),4)
         elif active:
             status, color = "🔴 Violation",  "#ff4444"
-            cv2.rectangle(img,(0,0),(w,h),(0,0,200),4)
+            cv2.rectangle(ann,(0,0),(w,h),(0,0,200),4)
         elif score > 78: status, color = "🟢 Focused",     "#00ff9d"
         elif score > 55: status, color = "🟡 Drifting",    "#ffcc00"
         else:            status, color = "🔴 Not focused", "#ff4444"
 
-        # ── Overlay text ───────────────────────────────────────────────────
+        # Аннотации на ann для Telegram
         font = cv2.FONT_HERSHEY_SIMPLEX
         score_col = (80,255,140) if score > 78 else ((0,200,255) if score > 55 else (80,80,255))
+        def put_ann(text, y, col):
+            cv2.putText(ann, text, (12,y), font, 0.48, (0,0,0), 3, cv2.LINE_AA)
+            cv2.putText(ann, text, (12,y), font, 0.48, col,     1, cv2.LINE_AA)
+        put_ann(f"Focus {int(score)}%", 24, score_col)
+        put_ann(f"Gaze  {gaze_cv}",     44, (220,220,220))
+        put_ann(f"Faces {faces_count}", 64, (220,220,220))
 
+        # Минимальный оверлей на чистом кадре — только фокус
         def put(text, y, col):
             cv2.putText(img, text, (12,y), font, 0.48, (0,0,0), 3, cv2.LINE_AA)
             cv2.putText(img, text, (12,y), font, 0.48, col,     1, cv2.LINE_AA)
-
         put(f"Focus {int(score)}%", 24, score_col)
         put(f"Gaze  {gaze_cv}",     44, (220,220,220))
         put(f"Faces {faces_count}", 64, (220,220,220))
