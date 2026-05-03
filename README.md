@@ -3,7 +3,7 @@
 <img src="https://img.shields.io/badge/Focus%20Guard%20Proctoring-00e5ff?style=for-the-badge&logo=eye&logoColor=white"/>
 
 # 🧠 Focus Guard
-### AI-Powered Real-Time Student Attention Monitoring System
+### Real-Time Student Attention Monitoring System
 
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.x-FF4B4B?style=flat-square&logo=streamlit&logoColor=white)](https://streamlit.io)
