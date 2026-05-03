@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/Focus%20Guard-AI%20Proctoring-00e5ff?style=for-the-badge&logo=eye&logoColor=white"/>
+<img src="https://img.shields.io/badge/Focus%20Guard%20Proctoring-00e5ff?style=for-the-badge&logo=eye&logoColor=white"/>
 
 # 🧠 Focus Guard
 ### AI-Powered Real-Time Student Attention Monitoring System
@@ -20,7 +20,7 @@
 
 ## 📌 1. Project Title
 
-**Focus Guard** — AI-Powered Real-Time Student Attention Monitoring & Proctoring System
+**Focus Guard** — Real-Time Student Attention Monitoring & Proctoring System
 
 ---
 
