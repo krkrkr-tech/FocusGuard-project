@@ -1,10 +1,11 @@
 streamlit
-streamlit-webrtc
 opencv-python-headless
+mediapipe==0.10.9
 numpy
-scipy
-dlib
 plotly
-ultralytics
+streamlit-webrtc
+aiortc
+av
 requests
-av==14.2.0
+ultralytics
+tornado
