@@ -1,0 +1,28 @@
+# ── Секреты — НИКОГДА не пушить ──────────────────────
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv/
+venv/
+env/
+
+# ML models
+*.pt
+*.onnx
+*.dat
+shape_predictor_68_face_landmarks.dat
+
+#OS 
+.DS_Store
+Thumbs.db
+desktop.ini
+
+#IDE
+.vscode/
+.idea/
+*.swp
