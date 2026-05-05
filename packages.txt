@@ -1,0 +1,3 @@
+libgl1
+libglvnd0
+libglib2.0-0t64
